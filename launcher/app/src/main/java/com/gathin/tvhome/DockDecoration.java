@@ -21,10 +21,8 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
     DockDecoration(int dockSize, float density) {
         this.dockSize = dockSize;
         this.density = density;
-        band.setColor(0xFF141416);
         edge.setStyle(Paint.Style.STROKE);
         edge.setStrokeWidth(density);
-        edge.setColor(0x1FFFFFFF);
     }
 
     @Override
@@ -60,7 +58,12 @@ public class DockDecoration extends RecyclerView.ItemDecoration {
         if (!any) return;
         float pad = 14 * density;
         rect.inset(-pad, -pad);
-        float radius = 26 * density;
+        float radius = 30 * density;
+        // Liquid glass: translucent sheen inside a rim lit along the top edge.
+        band.setShader(new android.graphics.LinearGradient(0, rect.top, 0, rect.bottom,
+                0x24FFFFFF, 0x0AFFFFFF, android.graphics.Shader.TileMode.CLAMP));
+        edge.setShader(new android.graphics.LinearGradient(0, rect.top, 0, rect.bottom,
+                0x80FFFFFF, 0x12FFFFFF, android.graphics.Shader.TileMode.CLAMP));
         c.drawRoundRect(rect, radius, radius, band);
         c.drawRoundRect(rect, radius, radius, edge);
     }

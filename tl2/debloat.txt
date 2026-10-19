@@ -1,0 +1,24 @@
+# BRAVIA TL2 (device OD0M_EA_T32, built by TPV, MediaTek), Android TV 11 (API 30)
+# build Sony/BRAVIA_TL2/OD0M_EA_T32:11/RTM2.210929.098/1594
+#
+# Apply:  ./disable.sh debloat.txt      Undo: ./restore.sh debloat.txt
+# Everything is DISABLED for user 0, never uninstalled.
+#
+# Kept on purpose: org.droidtv* (TPV TV stack, Live TV), com.mediatek.* (tuner/HDMI/inputs),
+# com.tpv_soem.*, katniss + tts (Assistant/voice), mediashell (Chromecast),
+# tv.remote.service (phone remote), Netflix, YouTube, YouTube Music, HBO.
+# Already disabled before we started (not listed so restore.sh leaves them off):
+# de.swr.avp.ard.tv, com.zdf.android.mediathek, com.google.android.videos
+
+# Apps the owner doesn't use
+com.amazon.amazonvideo.livingroom     # Prime Video
+com.disney.disneyplus                 # Disney+
+com.nousguide.android.rbtv            # Red Bull TV
+com.cg.football                       # Football game
+com.goodtoolapps.zeus                 # Zeus
+
+# Retail demo, partner auto-installs, Google extras
+fusion.android.tv.demo                # retail/shop demo mode
+android.autoinstalls.config.tpv.device # Play auto-install of partner apps
+com.google.android.feedback
+com.google.android.play.games

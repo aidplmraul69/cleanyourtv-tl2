@@ -37,6 +37,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.animation.ObjectAnimator;
+import android.animation.ValueAnimator;
 import android.view.animation.AnimationUtils;
 import android.view.animation.LayoutAnimationController;
 import android.widget.FrameLayout;
@@ -66,7 +68,7 @@ import java.util.Set;
 /**
  * tvOS style home: black, a pinned dock row, an app grid, and one glass highlight that springs between tiles.
  */
-public class MainActivity extends Activity implements AppAdapter.TileListener {
+public class MainActivity extends Activity implements AppAdapter.TileListener, AppDrawer.Host {
 
     /** Tiles per row and dock slots (res/values/config.xml, columns). Set in onCreate. */
     static int COLUMNS = 4;
@@ -164,11 +166,24 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             reloadApps(false);
         }
     };
+    /** All Apps drawer, opened with Right at the right edge of the screen. */
+    private AppDrawer drawer;
+
+    /** Move mode: the tile being carried with the arrows, -1 when not moving. */
+    private int movingPos = -1;
+    private ObjectAnimator jiggle;
+    private TextView moveHint;
+    private HomeLayout homeLayout;
+
+    /** Weather panel, top right; null when weather_widget is off in config.xml. */
+    private WeatherWidget weather;
+
     private final Runnable minuteTick = new Runnable() {
         @Override
         public void run() {
             updateGreeting();
             updateWifiLabel();
+            if (weather != null) weather.refreshIfStale();
             handler.postDelayed(this, MINUTE_MS);
         }
     };
@@ -191,6 +206,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         root.setBackgroundColor(cfg.backgroundColor);
         if (cfg.wallpaper != null) showWallpaper(cfg.wallpaper);
         glass = findViewById(R.id.glass);
+        glass.setVisibility(View.GONE);   // tvOS style: the focused tile itself lifts and shines
         ambient = findViewById(R.id.ambient);
         heroName = findViewById(R.id.heroName);
         ambientGlow = new GradientDrawable();
@@ -239,10 +255,56 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
         });
 
+        homeLayout = new HomeLayout(this);
+        moveHint = new TextView(this);
+        moveHint.setText(R.string.move_hint);
+        moveHint.setTextColor(0xF2FFFFFF);
+        moveHint.setTextSize(15);
+        moveHint.setTypeface(getResources().getFont(R.font.inter));
+        moveHint.setBackgroundResource(R.drawable.move_hint_bg);
+        moveHint.setPadding((int) (22 * density), (int) (11 * density), (int) (22 * density), (int) (11 * density));
+        moveHint.setAlpha(0f);
+        moveHint.setVisibility(View.GONE);
+        FrameLayout.LayoutParams hintLp = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        hintLp.bottomMargin = (int) (18 * density);
+        root.addView(moveHint, hintLp);
+
+        drawer = new AppDrawer(this, this);
+        root.addView(drawer, new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
+
+        weather = findViewById(R.id.weather);
+        if (!getResources().getBoolean(R.bool.weather_widget)) {
+            ((ViewGroup) weather.getParent()).removeView(weather);
+            weather.shutdown();
+            weather = null;
+        }
+
+        if (weather != null) {
+            // Weather panel: Up to the top bar, Down back to the dock, Right opens All Apps, OK the forecast.
+            weather.setOnKeyListener((v, keyCode, event) -> {
+                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                switch (keyCode) {
+                    case KeyEvent.KEYCODE_DPAD_UP: findViewById(R.id.btnSettings).requestFocus(); return true;
+                    case KeyEvent.KEYCODE_DPAD_DOWN: focusTile(Math.min(lastFocused, COLUMNS - 1)); return true;
+                    case KeyEvent.KEYCODE_DPAD_RIGHT: drawer.show(); return true;
+                    case KeyEvent.KEYCODE_DPAD_LEFT: return true;
+                    default: return false;
+                }
+            });
+        }
+
         // Keep the glass glued to its tile while the grid scrolls.
         grid.addOnScrollListener(new RecyclerView.OnScrollListener() {
             @Override
             public void onScrolled(@NonNull RecyclerView rv, int dx, int dy) {
+                // The weather panel gives way to the grid as it scrolls up over it.
+                if (weather != null) {
+                    float fade = 1f - rv.computeVerticalScrollOffset() / (140f * density);
+                    weather.setAlpha(Math.max(0f, Math.min(1f, fade)));
+                }
                 if (!glassShown) return;
                 glassTargetY -= dy;
                 glassScrollShift -= dy;
@@ -287,13 +349,23 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         View.OnKeyListener pillKeys = (v, keyCode, event) -> {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return true;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && weatherReachable()) {
+                weather.requestFocus();
+                return true;
+            }
             if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                 // The left end is Inputs, or Wi-Fi on a box without inputs.
                 return v.getId() == R.id.btnInputs
                         || (v.getId() == R.id.btnWifi && btnInputs.getVisibility() != View.VISIBLE);
             }
-            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v.getId() == R.id.btnSettings;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v.getId() == R.id.btnSettings) {
+                drawer.show();   // right edge: swipe the All Apps drawer in
+                return true;
+            }
+            return false;
         };
+        // Liquid-glass buttons (drawn in code: XML shapes can't stroke a gradient rim).
+        for (View b : new View[]{btnInputs, btnWifi, btnSettings}) b.setBackground(Glass.button(21 * density, density));
         btnInputs.setOnKeyListener(pillKeys);
         btnWifi.setOnKeyListener(pillKeys);
         btnSettings.setOnKeyListener(pillKeys);
@@ -361,6 +433,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         updateGreeting();
         updateWifiLabel();
         updateInputsButton();
+        if (weather != null) weather.refreshIfStale();
         handler.postDelayed(minuteTick, MINUTE_MS);
     }
 
@@ -434,6 +507,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         // Nothing of ours stays on screen over another app; an undecided prompt simply returns next time.
         if (cardPrompt != null) cardPrompt.dismiss();
         if (openPopup != null) openPopup.dismiss();
+        if (movingPos >= 0) finishMove();
+        drawer.dismissNow();
     }
 
     @Override
@@ -445,6 +520,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        if (weather != null) weather.shutdown();
         ConnectivityManager cm = getSystemService(ConnectivityManager.class);
         TvInputManager tim = (TvInputManager) getSystemService(TV_INPUT_SERVICE);
         if (tim != null) tim.unregisterCallback(inputCallback);
@@ -456,6 +532,14 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     public void onBackPressed() {
+        if (movingPos >= 0) {
+            finishMove();
+            return;
+        }
+        if (drawer.isOpen()) {
+            drawer.hide();
+            return;
+        }
         // Home screen: Back goes nowhere.
     }
 
@@ -507,6 +591,143 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             Rect want = new Rect(0, -(int) pad * 2, item.getWidth(), item.getHeight() + (int) pad);
             grid.requestChildRectangleOnScreen(item, want, false);
         }
+    }
+
+    /** The weather panel takes focus only while it is on screen (not faded out by a scrolled grid). */
+    private boolean weatherReachable() {
+        return weather != null && weather.getVisibility() == View.VISIBLE && weather.getAlpha() > 0.5f;
+    }
+
+    // ---- arranging Home --------------------------------------------------------------------------
+
+    @Override
+    public void onTileLongPress(int position, View card) {
+        if (movingPos >= 0) return;
+        String pkg = adapter.packageAt(position);
+        if (pkg == null) return;
+        View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
+        LinearLayout rows = panel.findViewById(R.id.rows);
+        PopupWindow popup = glassPopup(panel, (int) (240 * density));
+        addInputRow(rows, popup, R.drawable.ic_move, getString(R.string.move), -1, () -> startMove(position));
+        addInputRow(rows, popup, R.drawable.ic_remove, getString(R.string.remove_from_home), -1, () -> removeFromHome(pkg));
+        addSeparator(rows);
+        addInputRow(rows, popup, R.drawable.ic_info, getString(R.string.app_info), -1, () -> AppAdapter.openAppInfo(this, pkg));
+        showMenuAt(popup, panel, card);
+        rows.getChildAt(0).requestFocus();
+    }
+
+    @Override
+    public void onDrawerLongPress(String pkg, String label, View row) {
+        View panel = getLayoutInflater().inflate(R.layout.popup_inputs, root, false);
+        LinearLayout rows = panel.findViewById(R.id.rows);
+        PopupWindow popup = glassPopup(panel, (int) (260 * density));
+        if (adapter.hasPackage(pkg)) {
+            addInputRow(rows, popup, R.drawable.ic_remove, getString(R.string.remove_from_home), -1, () -> removeFromHome(pkg));
+        } else {
+            addInputRow(rows, popup, R.drawable.ic_add, getString(R.string.add_to_home), -1, () -> {
+                homeLayout.add(pkg, adapter.packageOrder());
+                reloadApps(false);
+                Toast.makeText(this, getString(R.string.added_to_home, label), Toast.LENGTH_SHORT).show();
+            });
+        }
+        addSeparator(rows);
+        addInputRow(rows, popup, R.drawable.ic_info, getString(R.string.app_info), -1, () -> AppAdapter.openAppInfo(this, pkg));
+        showMenuAt(popup, panel, row);
+        rows.getChildAt(0).requestFocus();
+    }
+
+    /** Hangs the menu under the view, or above it when it sits low on the screen (the dock). */
+    private void showMenuAt(PopupWindow popup, View panel, View anchor) {
+        panel.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED);
+        int[] at = new int[2];
+        anchor.getLocationInWindow(at);
+        int h = panel.getMeasuredHeight();
+        int gap = (int) (12 * density);
+        int y = at[1] + anchor.getHeight() + gap;
+        if (y + h > root.getHeight() - gap) y = Math.max(gap, at[1] - h - gap);
+        int x = Math.min(at[0], root.getWidth() - popup.getWidth() - gap);
+        panel.setAlpha(0f);
+        panel.setScaleX(0.94f);
+        panel.setScaleY(0.94f);
+        popup.showAtLocation(root, Gravity.TOP | Gravity.START, x, y);
+        panel.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(180)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f)).start();
+    }
+
+    private void removeFromHome(String pkg) {
+        String label = adapter.labelAt(adapter.packageOrder().indexOf(pkg));
+        homeLayout.remove(pkg, adapter.packageOrder());
+        reloadApps(false);
+        if (!drawer.isOpen()) grid.post(() -> focusTile(Math.min(lastFocused, adapter.getItemCount() - 1)));
+        Toast.makeText(this, getString(R.string.removed_from_home, label), Toast.LENGTH_SHORT).show();
+    }
+
+    private void startMove(int position) {
+        movingPos = position;
+        moveHint.setVisibility(View.VISIBLE);
+        moveHint.animate().alpha(1f).setDuration(200).start();
+        grid.post(() -> {
+            focusTile(movingPos);
+            startJiggle();
+        });
+    }
+
+    /** One step with the arrows: swap places with the neighbour, the dock included. */
+    private void moveTile(int keyCode) {
+        int count = adapter.getItemCount(), pos = movingPos, target = pos;
+        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT && pos % COLUMNS != 0) target = pos - 1;
+        else if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && pos % COLUMNS != COLUMNS - 1) target = pos + 1;
+        else if (keyCode == KeyEvent.KEYCODE_DPAD_UP && pos >= COLUMNS) target = pos - COLUMNS;
+        else if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) target = pos + COLUMNS;
+        target = Math.min(target, count - 1);
+        if (target == pos || !adapter.isApp(target)) return;
+        stopJiggle();
+        adapter.move(pos, target);
+        movingPos = target;
+        grid.post(() -> {
+            focusTile(movingPos);
+            startJiggle();
+        });
+    }
+
+    private void finishMove() {
+        movingPos = -1;
+        stopJiggle();
+        homeLayout.saveOrder(adapter.packageOrder());
+        moveHint.animate().alpha(0f).setDuration(160).withEndAction(() -> moveHint.setVisibility(View.GONE)).start();
+    }
+
+    /** The carried tile wiggles like an iPhone icon in edit mode. */
+    private void startJiggle() {
+        RecyclerView.ViewHolder h = grid.findViewHolderForAdapterPosition(movingPos);
+        if (h == null) return;
+        View card = h.itemView.findViewById(R.id.card);
+        jiggle = ObjectAnimator.ofFloat(card, View.ROTATION, -1.6f, 1.6f);
+        jiggle.setDuration(130);
+        jiggle.setRepeatCount(ValueAnimator.INFINITE);
+        jiggle.setRepeatMode(ValueAnimator.REVERSE);
+        jiggle.start();
+    }
+
+    private void stopJiggle() {
+        if (jiggle == null) return;
+        jiggle.cancel();
+        Object t = jiggle.getTarget();
+        if (t instanceof View) ((View) t).setRotation(0f);
+        jiggle = null;
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        // While moving, OK drops the tile instead of opening the app.
+        if (movingPos >= 0) {
+            int k = event.getKeyCode();
+            if (k == KeyEvent.KEYCODE_DPAD_CENTER || k == KeyEvent.KEYCODE_ENTER || k == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                if (event.getAction() == KeyEvent.ACTION_UP) finishMove();
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     // ---- top shelf -------------------------------------------------------------------------------
@@ -568,15 +789,25 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     public boolean onTileVerticalKey(int position, int keyCode) {
         int count = adapter.getItemCount();
         int target;
+        if (movingPos >= 0) {
+            moveTile(keyCode);
+            return true;
+        }
         // Horizontal: swallow the key at a row's ends so focus never wraps to the next row or
         // escapes up into the top bar. Mid-row moves fall through to the default focus search.
         if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
             return position % COLUMNS == 0;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
-            return position % COLUMNS == COLUMNS - 1 || position == count - 1;
+            boolean rowEnd = position % COLUMNS == COLUMNS - 1 || position == count - 1;
+            if (rowEnd) drawer.show();   // right edge: swipe the All Apps drawer in
+            return rowEnd;
         }
         if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            if (position < COLUMNS && weatherReachable()) {   // dock row: the weather panel sits above it
+                weather.requestFocus();
+                return true;
+            }
             if (position < COLUMNS) return false;          // dock row: let focus move to the top bar
             target = position - COLUMNS;
         } else {

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Weather panel: liquid glass; focused, the glass brightens and the rim lights up all round. -->
+<selector xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:state_focused="true">
+        <layer-list>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#FFFFFFFF" android:endColor="#B3FFFFFF" />
+            <corners android:radius="26dp" />
+        </shape>
+    </item>
+    <item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp">
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#38FFFFFF" android:endColor="#1AFFFFFF" />
+            <corners android:radius="26dp" />
+        </shape>
+    </item>
+        </layer-list>
+    </item>
+    <item>
+        <layer-list>
+    <item>
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#73FFFFFF" android:endColor="#12FFFFFF" />
+            <corners android:radius="26dp" />
+        </shape>
+    </item>
+    <item android:left="1dp" android:top="1dp" android:right="1dp" android:bottom="1dp">
+        <shape android:shape="rectangle">
+            <gradient android:angle="270" android:startColor="#26FFFFFF" android:endColor="#0FFFFFFF" />
+            <corners android:radius="26dp" />
+        </shape>
+    </item>
+        </layer-list>
+    </item>
+</selector>

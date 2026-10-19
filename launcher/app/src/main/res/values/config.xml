@@ -10,15 +10,16 @@
     <!-- Apps pinned to the dock row at the bottom, in this order. Missing apps are skipped. -->
     <string-array name="dock_apps">
         <item>com.netflix.ninja</item>
-        <item>com.amazon.amazonvideo.livingroom</item>
         <item>com.google.android.youtube.tv</item>
-        <item>in.startv.hotstar</item>
+        <item>org.jellyfin.androidtv</item>
+        <item>eu.hbogo.androidtv.production</item>
     </string-array>
 
     <!-- Apps never shown as tiles (e.g. the Live TV app, which the Inputs menu already covers). -->
     <string-array name="hidden_apps">
         <item>com.mediatek.wwtv.tvcenter</item>
-        <item>com.mitv.gallery</item>
+        <item>com.android.tv.settings</item>
+        <item>org.droidtv.eum</item>
     </string-array>
 
     <!-- The TV's Live TV / tuner app, offered at the end of the Inputs menu. Leave empty to omit. -->
@@ -61,4 +62,11 @@
     <!-- Module cards: an app that declares a card (docs/specs/card.md) can stand in for its tile with its own
          label, caption and glow colour, once you answer Show on the prompt. false: never look for cards or ask. -->
     <bool name="module_cards">true</bool>
+
+    <!-- Weather widget (top right, Open-Meteo, no key). Leave latitude/longitude empty to locate the TV
+         from its public IP once a day; set them (e.g. 44.4268 / 26.1025) and a place name to pin it. -->
+    <bool name="weather_widget">true</bool>
+    <string name="weather_latitude" translatable="false"></string>
+    <string name="weather_longitude" translatable="false"></string>
+    <string name="weather_place" translatable="false"></string>
 </resources>

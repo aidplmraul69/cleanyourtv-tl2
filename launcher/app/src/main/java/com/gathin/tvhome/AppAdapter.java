@@ -47,6 +47,9 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
 
         /** Called for a D-pad direction key on a tile. Return true when handled (focus stays put). */
         boolean onTileVerticalKey(int position, int keyCode);
+
+        /** Long press on a tile: the Move / Remove / App info menu. */
+        void onTileLongPress(int position, View card);
     }
 
     static final class Entry {
@@ -79,7 +82,10 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         }
     }
 
-    static final float FOCUS_SCALE = 1.10f;
+    static final float FOCUS_SCALE = 1.12f;
+
+    /** Last arrow pressed on a tile (-1 left, 1 right, -2 up, 2 down), so the next tile tilts in from that side. */
+    static int lastDir = 0;
     /** Design size of a tile (dp); tiles shrink from here when the columns don't fit, see tileWidthPx. */
     static final float DESIGN_W_DP = 180f, DESIGN_H_DP = 101f;
 
@@ -112,6 +118,8 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
     /** Never shown as tiles (res/values/config.xml, hidden_apps). */
     private final Set<String> hidden;
     private final boolean showHomeSettings;
+    /** The owner's order and add/remove choices; overrides favourites once they exist. */
+    private final HomeLayout layout;
     private final List<Entry> items = new ArrayList<>();
 
     AppAdapter(Context ctx, TileListener listener, int dockSize, Config cfg) {
@@ -121,6 +129,7 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         this.favourites = cfg.dockApps;
         this.hidden = new HashSet<>(cfg.hiddenApps);
         this.showHomeSettings = cfg.showHomeSettingsShortcut;
+        this.layout = new HomeLayout(ctx);
         // Tiles keep their identity across reload(), so a focused tile stays on its app instead of
         // its view being rebound to whatever app now sits in that slot.
         setHasStableIds(true);
@@ -140,7 +149,8 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         for (ResolveInfo ri : found) {
             if (ri.activityInfo == null) continue;
             String pkg = ri.activityInfo.packageName;
-            if (pkg.equals(ctx.getPackageName()) || hidden.contains(pkg)) continue;
+            if (pkg.equals(ctx.getPackageName()) || layout.isRemoved(pkg)) continue;
+            if (hidden.contains(pkg) && !layout.isAdded(pkg)) continue;
             ComponentName component = new ComponentName(pkg, ri.activityInfo.name);
             Cards.Card card = cardByPkg.get(pkg);
             if (card != null && !card.component.equals(component)) continue;   // the card stands in for this tile
@@ -153,8 +163,22 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
                 fresh.add(new Entry(String.valueOf(ri.loadLabel(pm)), component, banner, icon));
             }
         }
+        // Apps added from All Apps that have no TV entry point (phone-style apps).
+        Set<String> have = new HashSet<>();
+        for (Entry e : fresh) have.add(e.pkg);
+        for (String pkg : layout.added()) {
+            if (have.contains(pkg)) continue;
+            Intent li = pm.getLaunchIntentForPackage(pkg);
+            ResolveInfo ri = li == null ? null : pm.resolveActivity(li, 0);
+            if (ri == null || ri.activityInfo == null) continue;
+            fresh.add(new Entry(String.valueOf(ri.loadLabel(pm)),
+                    new ComponentName(pkg, ri.activityInfo.name), null, ri.loadIcon(pm)));
+        }
+        // The owner's arrangement wins; apps it doesn't know yet (new installs) go to the end, A-Z.
+        final List<String> order = layout.order();
+        final List<String> ranking = order.isEmpty() ? favourites : order;
         Collections.sort(fresh, (a, b) -> {
-            int fa = favourites.indexOf(a.pkg), fb = favourites.indexOf(b.pkg);
+            int fa = ranking.indexOf(a.pkg), fb = ranking.indexOf(b.pkg);
             if (fa >= 0 || fb >= 0) {
                 if (fa < 0) return 1;
                 if (fb < 0) return -1;
@@ -222,12 +246,9 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
         }
         h.card.setOnClickListener(v -> launch(e));
         h.card.setOnLongClickListener(v -> {
-            Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + e.pkg));
-            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            try {
-                ctx.startActivity(i);
-            } catch (ActivityNotFoundException ignored) {
-            }
+            int pos = h.getBindingAdapterPosition();
+            if (e.kind == Entry.HOME_SETTINGS || listener == null || pos == RecyclerView.NO_POSITION) return false;
+            listener.onTileLongPress(pos, v);
             return true;
         });
     }
@@ -243,6 +264,11 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
                 .addCategory(Intent.CATEGORY_LEANBACK_LAUNCHER)
                 .setComponent(e.component)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        if (ctx.getPackageManager().resolveActivity(i, 0) == null) {
+            // Added from All Apps without a TV entry point: open it the way a phone launcher would.
+            Intent phone = ctx.getPackageManager().getLaunchIntentForPackage(e.pkg);
+            if (phone != null) i = phone.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
         try {
             ctx.startActivity(i);
         } catch (Exception ex) {
@@ -261,6 +287,45 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
     }
 
     /** Stable key for the app at a position (its component), or null. */
+    /** Packages in tile order (the "Default home" tile is not an app and is left out). */
+    List<String> packageOrder() {
+        List<String> out = new ArrayList<>();
+        for (Entry e : items) if (e.kind != Entry.HOME_SETTINGS) out.add(e.pkg);
+        return out;
+    }
+
+    boolean hasPackage(String pkg) {
+        for (Entry e : items) if (e.pkg.equals(pkg)) return true;
+        return false;
+    }
+
+    String packageAt(int position) {
+        return position >= 0 && position < items.size() ? items.get(position).pkg : null;
+    }
+
+    boolean isApp(int position) {
+        return position >= 0 && position < items.size() && items.get(position).kind != Entry.HOME_SETTINGS;
+    }
+
+    /** Moves one tile; the two slots rebind so dock tiles lose their label and grid tiles get it back. */
+    void move(int from, int to) {
+        if (from == to || !isApp(from) || !isApp(to)) return;
+        items.add(to, items.remove(from));
+        notifyItemMoved(from, to);
+        notifyItemChanged(from);
+        notifyItemChanged(to);
+    }
+
+    /** App details settings for a package. */
+    static void openAppInfo(Context ctx, String pkg) {
+        Intent i = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + pkg));
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            ctx.startActivity(i);
+        } catch (ActivityNotFoundException ignored) {
+        }
+    }
+
     String keyAt(int position) {
         return position >= 0 && position < items.size() ? items.get(position).component.flattenToShortString() : null;
     }
@@ -362,15 +427,33 @@ public class AppAdapter extends RecyclerView.Adapter<AppAdapter.Holder> {
                 if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
                 if (keyCode != KeyEvent.KEYCODE_DPAD_UP && keyCode != KeyEvent.KEYCODE_DPAD_DOWN
                         && keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
+                lastDir = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1
+                        : keyCode == KeyEvent.KEYCODE_DPAD_UP ? -2 : 2;
                 int pos = getBindingAdapterPosition();
                 return listener != null && pos != RecyclerView.NO_POSITION && listener.onTileVerticalKey(pos, keyCode);
             });
 
+            card.setCameraDistance(9000 * density);
+            final Shine shine = new Shine();
             card.setOnFocusChangeListener((view, focused) -> {
                 float s = focused ? FOCUS_SCALE : 1.0f;
-                view.animate().scaleX(s).scaleY(s)
-                        .setDuration(focused ? 260 : 180)
-                        .setInterpolator(new OvershootInterpolator(focused ? 1.6f : 0f))
+                if (focused) {
+                    // Tilt in from the side we came from, then settle flat (tvOS parallax feel).
+                    if (lastDir == -1 || lastDir == 1) view.setRotationY(lastDir * 7f);
+                    else if (lastDir != 0) view.setRotationX(lastDir > 0 ? -6f : 6f);
+                    view.setForeground(shine);
+                    android.animation.ValueAnimator sweep = android.animation.ValueAnimator.ofFloat(0f, 1f);
+                    sweep.setDuration(650);
+                    sweep.setStartDelay(90);
+                    sweep.addUpdateListener(a -> shine.setProgress((float) a.getAnimatedValue()));
+                    sweep.start();
+                } else {
+                    view.setForeground(null);
+                }
+                view.animate().scaleX(s).scaleY(s).rotationX(0f).rotationY(0f)
+                        .translationZ(focused ? 22 * density : 0f)
+                        .setDuration(focused ? 420 : 200)
+                        .setInterpolator(new OvershootInterpolator(focused ? 1.3f : 0f))
                         .start();
                 name.animate().alpha(focused ? 1f : 0f)
                         .translationY(focused ? density * 4f : -density * 6f)
